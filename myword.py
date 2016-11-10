@@ -1,14 +1,23 @@
-# Issue Link with text in paper
-# Run with newline
-# \href
 #
-#https://cloud.githubusercontent.com/assets/18180/20060827/4fc5a894-a4fd-11e6-984d-08511fa2c001.png
-#[https://cloud.githubusercontent.com/assets/18180/20060827/4fc5a894-a4fd-11e6-984d-08511fa2c001.png](https://cloud.githubusercontent.com/assets/18180/20060827/4fc5a894-a4fd-11e6-984d-08511fa2c001.png)
+# Markdown to Word with scientific helpers (captions,cite)
+#
+# Emanuele Ruffaldi 2016
 
-
+# TODO emit images
+# TODO emit cite
+# TODO emit ref
+# TODO emit footnote
+# TODO emit caption
+# TODO more numbered p1.set_numbering(numbering['ilvl'], self.numId)
+# TODO nested lists: https://github.com/python-openxml/python-docx/issues/122
 import mistune
 import sys
-
+import docx
+from docx.oxml.ns import nsdecls
+from docx.oxml import parse_xml
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Mm
+from docxhelper import add_hyperlink,para_set_numbering
 # process text if any
 # emit link around text if any
 class Link:
@@ -21,6 +30,8 @@ class Link:
         self.auto = auto
 
 # process text and then apply style
+#p.add_run('bold').bold = True
+#p.add_run('italic.').italic = True
 class Style:
     def __init__(self,text,mode):
         self.text = text
@@ -29,32 +40,39 @@ class Style:
 # add image needs download
 # add caption
 # add reference
+#document.add_picture('monty-truth.png', width=Inches(1.25))
 class Image:
     def __init__(self,src,title,text):
         self.src = src
         self.title = title
         self.text = text
 
+# process and add footnote
 class Footnote:
     def __init__(self,content):
         self.text = content
 
+# bookmark WHERE? TODO
 class Bookmark:
     def __init__(self,label):
         self.label = label
 
+# plain text
 class Run:
     def __init__(self,text):
         self.text = text
 
+# add REF tag + bibtex
 class Cite:
     def __init__(self,cite):
         self.cite = cite
 
+# add bookmark
 class Caption:
     def __init__(self,ref):
         self.ref = ref
 
+# add REF tag
 class Ref:
     def __init__(self,ref):
         self.ref = ref
@@ -75,6 +93,7 @@ class Holder:
     def __len__(self):
         return len(self.runs)
 
+#p = document.add_paragraph('A plain paragraph having some ')
 class Paragraph(Holder):
     def __init__(self,ho):
         Holder.__init__(self)
@@ -91,6 +110,7 @@ class Paragraph(Holder):
                 print "replace image ignore:",ho.runs[1].text,"with img"
                 self.runs = [img]
 
+
 class List(Holder):
     def __init__(self,ho,ord):
         Holder.__init__(self)
@@ -102,6 +122,8 @@ class ListItem(Holder):
         Holder.__init__(self)
         self.runs = ho.runs
 
+#document.add_heading('Document Title', 0)
+#document.add_heading('Heading, level 1', level=1)
 class Header:
     def __init__(self,text,level,raw=None):
         self.text = text
@@ -155,10 +177,14 @@ class WordRenderer(mistune.Renderer):
         # AUTO detect caption
         print "*text",text
         w = [text]
+        # special with recursion
+        pieces = []
+
         # order matters, footnote last
-        pieces = [("\\cite{",Cite),("\\ref{",Ref),("\\caption{",Caption),("\\label{",Bookmark),("\\url{",lambda x: Link(x,None,None,None)),("\\footnote",Footnote)]
+        pieces = [("\\footnote{",Footnote),("\\cite{",Cite),("\\ref{",Ref),("\\caption{",Caption),("\\label{",Bookmark),("\\url{",lambda x: Link(x,None,None,None))]
         for p,t in pieces:
             r = []
+            print "proecessing",w
             for text in w:
                 if type(text) is str:
                     a = text.split(p)
@@ -169,14 +195,100 @@ class WordRenderer(mistune.Renderer):
                             r.append(a[0])
                         for i in range(1,len(a)):
                             # text cite}text cite}text 
-                            aw = a[i].split("}",1)
-                            r.append(t(aw[0]))
-                            if len(aw) == 2:
-                                r.append(Run(aw[1]))
+                            if t == Footnote:
+                                # look for correct number of parent
+                                n = 1
+                                aw = a[i]
+                                j = 0
+                                for j in range(0,len(aw)):
+                                    if aw[j] == '{':
+                                        n += 1
+                                    elif aw[j] == '}':
+                                        n -= 1
+                                        if n == 0:
+                                            break
+                                inside = aw[0:j]
+                                outside = aw[j+1:]
+                                r.append(t(self.text(inside)))
+                                if len(outside) != 0:
+                                    r.append(self.text(outside))
+                            else:
+                                aw = a[i].split("}",1)
+                                r.append(t(aw[0]))
+                                if len(aw) == 2:
+                                    r.append(Run(aw[1]))
                 else:
                     r.append(text)
             w = r
         return [Run(x) if type(x) is str else x for x in w]
+
+class Wordizer:
+    def __init__(self,d):
+        self.doc = d
+    def run(self,ctx,x):
+        n = x.__class__.__name__
+        m = getattr(self,"do_" + n,None)
+        if m is not None:
+            return m(ctx,x)
+        else:
+            print "skip",n
+    def gettext(self,q):
+        if isinstance(q,Holder):
+            s = ""
+            for p in q.runs:
+                s += self.gettext(p)
+            return s
+        elif isinstance(q,Run):
+            return q.text
+        else:
+            print "gettext",q.__class__.__name__
+            return q.text
+    def do_Document(self,ctx,x):
+        for p in x.runs:
+            self.run(self.doc,p)
+    def do_Header(self,doc,x):
+        return doc.add_heading(self.gettext(x.text),level=x.level)
+    def do_Run(self,up,x):
+        return up.add_run(x.text)
+    def do_Paragraph(self,up,x):
+        para = up.add_paragraph()
+        for p in x.runs:
+            self.run(para,p)
+        return para        
+    def do_Link(self,up,x):
+        return add_hyperlink(up,x.link,x.text)
+    def do_Holder(self,up,x):
+        q = []
+        for p in x.runs:
+            q.append(self.run(up,p))
+        return q
+    def do_Ref(self,up,x):
+        return up.add_run("<<"+x.ref+">>")
+    def do_Cite(self,up,x):
+        return up.add_run(x.cite)
+    def do_ListItem(self,upx,x):
+        up,style = upx
+        para = self.doc.add_paragraph()
+        #para_set_numbering(para,2,2)
+        para.style = style
+        for p in x.runs:
+            self.run(para,p)
+        return para
+    def do_Style(self,up,x):
+        rr = self.run(up,x.text)
+        for r in rr:
+            if x.mode == "bold":
+                r.bold = True
+            elif x.mode == "italics":
+                print "apply ita to",r.text
+                r.italic = True
+        return rr
+    def do_List(self,up,x):
+        s = "List Number" if x.ordered else "List Bullet"
+        for p in x.runs:
+            r = self.run((up,s),p)
+            # if x is ordered ...
+        return None
 
 #miss list paragraph 
 def dump(r,w=""):
@@ -191,10 +303,13 @@ def main():
     renderer = WordRenderer()
     markdown = mistune.Markdown(renderer=renderer)  
     r = Document(markdown(open(sys.argv[1],"rb").read()))
-    print type(r)
-    # output is holder
-    print r
     dump(r)
+    document = docx.Document()
+    w = Wordizer(document)
+    w.run(document,r)
+    document.save("x.docx")
+    print "generated x.docx"
+
 
 
 if __name__ == '__main__':
